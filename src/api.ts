@@ -1,6 +1,6 @@
 // Thin typed wrappers over the Tauri command surface (src-tauri/src/commands.rs).
 
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { invoke, channel } from "./lib/invoke";
 import { imageBytes, type ImageBytesResponse } from "./lib/imageBytes";
 import type {
   AiEvent,
@@ -82,10 +82,8 @@ export function refreshFeeds(
   onProgress?: (p: RefreshProgress) => void,
   scope?: { feedId?: number; folderId?: number },
 ): Promise<number> {
-  const channel = new Channel<RefreshProgress>();
-  if (onProgress) channel.onmessage = onProgress;
   return invoke<number>("refresh_feeds", {
-    onProgress: channel,
+    onProgress: channel<RefreshProgress>(onProgress),
     feedId: scope?.feedId ?? null,
     folderId: scope?.folderId ?? null,
   });
@@ -151,24 +149,18 @@ export function aiSummarize(
   articleId: number,
   onToken: (e: AiEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<AiEvent>();
-  channel.onmessage = onToken;
-  return invoke<void>("ai_summarize", { articleId, onToken: channel });
+  return invoke<void>("ai_summarize", { articleId, onToken: channel<AiEvent>(onToken) });
 }
 
 export function aiAsk(
   question: string,
   onToken: (e: AiEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<AiEvent>();
-  channel.onmessage = onToken;
-  return invoke<void>("ai_ask", { question, onToken: channel });
+  return invoke<void>("ai_ask", { question, onToken: channel<AiEvent>(onToken) });
 }
 
 export function aiDigest(onToken: (e: AiEvent) => void): Promise<void> {
-  const channel = new Channel<AiEvent>();
-  channel.onmessage = onToken;
-  return invoke<void>("ai_digest", { onToken: channel });
+  return invoke<void>("ai_digest", { onToken: channel<AiEvent>(onToken) });
 }
 
 /** Translate the article body into `lang` using `engine` (`llm` / `google` /
@@ -181,9 +173,12 @@ export function aiTranslate(
   engine: string,
   onEvent: (e: TranslateEvent) => void,
 ): Promise<void> {
-  const channel = new Channel<TranslateEvent>();
-  channel.onmessage = onEvent;
-  return invoke<void>("ai_translate", { articleId, lang, engine, onEvent: channel });
+  return invoke<void>("ai_translate", {
+    articleId,
+    lang,
+    engine,
+    onEvent: channel<TranslateEvent>(onEvent),
+  });
 }
 
 /** Translate only the list preview fields for an article and persist them in the

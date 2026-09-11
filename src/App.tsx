@@ -7,6 +7,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
+import { isTauri } from "./lib/platform";
 import { useUi, READER_FONTS, resolveMode, systemPrefersDark } from "./store";
 import type { Palette, ResolvedMode } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
@@ -139,15 +140,17 @@ export default function App() {
     // that strip blends with the reader pane it sits next to. (On Win/Linux the
     // webview is opaque, so setBackgroundColor here mainly covers their own
     // resize/overscroll; harmless on macOS where it's the NSWindow colour.)
-    const backing = BACKING[palette][effectiveMode];
-    getCurrentWindow().setBackgroundColor(backing).catch(() => {});
-    getCurrentWebview().setBackgroundColor(backing).catch(() => {});
-    // macOS only: the calls above can't reach `underPageBackgroundColor`, the
-    // overscroll/resize *gutter* that otherwise stays stuck on the light config
-    // colour and flashes white at a fast-resize edge. set_native_backing pins it
-    // (plus drawsBackground + NSWindow) in one shot; a no-op off macOS.
-    const [r, g, b] = hexRgb(backing);
-    invoke("set_native_backing", { r, g, b }).catch(() => {});
+    if (isTauri) {
+      const backing = BACKING[palette][effectiveMode];
+      getCurrentWindow().setBackgroundColor(backing).catch(() => {});
+      getCurrentWebview().setBackgroundColor(backing).catch(() => {});
+      // macOS only: the calls above can't reach `underPageBackgroundColor`, the
+      // overscroll/resize *gutter* that otherwise stays stuck on the light config
+      // colour and flashes white at a fast-resize edge. set_native_backing pins it
+      // (plus drawsBackground + NSWindow) in one shot; a no-op off macOS.
+      const [r, g, b] = hexRgb(backing);
+      invoke("set_native_backing", { r, g, b }).catch(() => {});
+    }
   }, [palette, effectiveMode, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
@@ -243,6 +246,7 @@ export default function App() {
 
   // ── background refresh events from the Rust scheduler ──
   useEffect(() => {
+    if (!isTauri) return;
     const un = listen("feeds-updated", () => {
       qc.invalidateQueries({ queryKey: ["feeds"] });
       qc.invalidateQueries({ queryKey: ["counts"] });
@@ -255,6 +259,7 @@ export default function App() {
 
   // ── "Settings…" from the menu-bar tray ──
   useEffect(() => {
+    if (!isTauri) return;
     const un = listen("tray-open-settings", () => setSettings({ open: true }));
     return () => {
       un.then((f) => f());
@@ -263,6 +268,7 @@ export default function App() {
 
   // ── papr://subscribe deep links from the browser extension (F6) ──
   useEffect(() => {
+    if (!isTauri) return;
     const un = listen<string>("deep-link-subscribe", (e) => {
       setAddFeedUrl(e.payload);
       setAddFeed(true);
@@ -289,6 +295,7 @@ export default function App() {
   // Delayed so it doesn't compete with the first feed refresh for bandwidth;
   // `silent` keeps a missing release feed (or a dev build) from raising noise.
   useEffect(() => {
+    if (!isTauri) return;
     const id = window.setTimeout(() => {
       void checkForUpdates({ silent: true });
     }, 4000);

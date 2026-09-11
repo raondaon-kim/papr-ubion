@@ -10,6 +10,13 @@ export const isMac =
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
 
+// The Vite development server can render the UI in an ordinary browser, while
+// the desktop application supplies Tauri's IPC bridge. Keep native-only calls
+// behind this check so a localhost visual preview does not crash before the
+// shell renders.
+export const isTauri =
+  typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
 // The primary modifier glyph for the current platform. Shown in <kbd> chips,
 // command-palette hints, the shortcuts cheat sheet — anywhere a label sits
 // next to (or instead of) the actual key.

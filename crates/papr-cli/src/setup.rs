@@ -169,8 +169,8 @@ fn install_claude(bin: &str) -> Result<String, String> {
 
 // ─────────────────────────────── Codex ───────────────────────────────
 
-/// Write a SessionStart entry into `~/.codex/hooks.json` and ensure
-/// `[features].hooks = true` in `~/.codex/config.toml`.
+/// Write a documented SessionStart command hook into `~/.codex/hooks.json`
+/// and ensure `[features].hooks = true` in `~/.codex/config.toml`.
 fn install_codex(bin: &str) -> Result<String, String> {
     let dir = home().map_err(|e| e.message.clone())?.join(".codex");
     std::fs::create_dir_all(&dir).map_err(|e| format!("mkdir .codex: {e}"))?;
@@ -182,27 +182,7 @@ fn install_codex(bin: &str) -> Result<String, String> {
     } else {
         serde_json::json!({})
     };
-    let sessions = root
-        .as_object_mut()
-        .ok_or("hooks.json root is not an object")?
-        .entry("SessionStart")
-        .or_insert_with(|| serde_json::json!([]));
-    let arr = sessions.as_array_mut().ok_or("SessionStart is not an array")?;
-    let is_papr = |cmd: &str| cmd == "papr" || cmd.ends_with("/papr");
-    let mut found = false;
-    for h in arr.iter_mut() {
-        if let Some(cmd) = h.get("command").and_then(|c| c.as_str()) {
-            if is_papr(cmd) {
-                found = true;
-                if cmd != bin {
-                    h["command"] = serde_json::json!(bin);
-                }
-            }
-        }
-    }
-    if !found {
-        arr.push(serde_json::json!({ "type": "command", "command": bin }));
-    }
+    let change = install_papr_session_start_hook(&mut root, bin)?;
     let pretty =
         serde_json::to_string_pretty(&root).map_err(|e| format!("serialize hooks.json: {e}"))?;
     std::fs::write(&file, pretty + "\n").map_err(|e| format!("write hooks.json: {e}"))?;
@@ -213,11 +193,112 @@ fn install_codex(bin: &str) -> Result<String, String> {
     if let Some(next) = ensure_codex_hooks(&existing) {
         std::fs::write(&cfg, next).map_err(|e| format!("write config.toml: {e}"))?;
     }
-    Ok(format!(
-        "{} → {}",
-        if found { "updated" } else { "installed" },
-        collapse(&file)
-    ))
+    Ok(format!("{} → {}", change, collapse(&file)))
+}
+
+/// Merge Papr's command into Codex's current hook schema without replacing
+/// hooks from the user or other tools. Older Papr versions wrote a flat
+/// `SessionStart` array at the root of `hooks.json`; convert that form on the
+/// next setup run so upgrading repairs the integration rather than duplicating
+/// a stale hook.
+fn install_papr_session_start_hook(root: &mut Value, bin: &str) -> Result<&'static str, String> {
+    const TIMEOUT_SECS: u64 = 10;
+    const CONTEXT_LIMIT: u64 = 1_200;
+
+    let root = root
+        .as_object_mut()
+        .ok_or("hooks.json root is not an object")?;
+
+    // Migrate the flat schema written by Papr before Codex adopted the
+    // `hooks -> event -> matcher group -> handlers` nesting.
+    let legacy = root.remove("SessionStart");
+    let legacy_handlers = match legacy {
+        Some(Value::Array(handlers)) => Some(handlers),
+        Some(_) => return Err("legacy SessionStart is not an array".into()),
+        None => None,
+    };
+
+    let hooks = root.entry("hooks").or_insert_with(|| json!({}));
+    let hooks = hooks
+        .as_object_mut()
+        .ok_or("hooks.json hooks is not an object")?;
+    let sessions = hooks.entry("SessionStart").or_insert_with(|| json!([]));
+    let sessions = sessions
+        .as_array_mut()
+        .ok_or("hooks.SessionStart is not an array")?;
+
+    let migrated = legacy_handlers.is_some();
+    if let Some(handlers) = legacy_handlers {
+        // Preserve every legacy command rather than silently dropping a hook
+        // owned by another integration. Its old event array maps to one
+        // unfiltered SessionStart matcher group.
+        sessions.push(json!({ "matcher": "startup|resume", "hooks": handlers }));
+    }
+
+    let command = hook_command(bin);
+    let mut found = false;
+    for group in sessions.iter_mut() {
+        let Some(handlers) = group.get_mut("hooks").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for handler in handlers.iter_mut() {
+            let Some(handler) = handler.as_object_mut() else {
+                continue;
+            };
+            let is_papr = handler
+                .get("command")
+                .and_then(Value::as_str)
+                .is_some_and(is_papr_command);
+            if is_papr {
+                found = true;
+                handler.insert("type".into(), json!("command"));
+                handler.insert("command".into(), json!(&command));
+                handler
+                    .entry("timeout")
+                    .or_insert_with(|| json!(TIMEOUT_SECS));
+                handler
+                    .entry("additionalContextLimit")
+                    .or_insert_with(|| json!(CONTEXT_LIMIT));
+            }
+        }
+    }
+    if !found {
+        sessions.push(json!({
+            "matcher": "startup|resume",
+            "hooks": [{
+                "type": "command",
+                "command": command,
+                "timeout": TIMEOUT_SECS,
+                "additionalContextLimit": CONTEXT_LIMIT,
+            }],
+        }));
+    }
+
+    Ok(if migrated {
+        "migrated"
+    } else if found {
+        "updated"
+    } else {
+        "installed"
+    })
+}
+
+/// The hook runner receives a shell command. Quote an absolute binary path
+/// that contains spaces while preserving the portable bare `papr` command.
+fn hook_command(bin: &str) -> String {
+    if bin.contains(char::is_whitespace) {
+        format!("\"{bin}\"")
+    } else {
+        bin.to_string()
+    }
+}
+
+/// Recognise Papr commands produced by both Unix and Windows releases so a
+/// setup re-run repairs a stale absolute path instead of adding a duplicate.
+fn is_papr_command(command: &str) -> bool {
+    let command = command.trim().trim_matches('"');
+    let name = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    name.eq_ignore_ascii_case("papr") || name.eq_ignore_ascii_case("papr.exe")
 }
 
 /// Ensure `[features].hooks = true` in a Codex `config.toml`'s text, returning
@@ -312,7 +393,99 @@ fn collapse(p: &std::path::Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_codex_hooks;
+    use super::{ensure_codex_hooks, install_papr_session_start_hook, is_papr_command};
+    use serde_json::json;
+
+    #[test]
+    fn installs_papr_in_the_documented_nested_hook_schema() {
+        let mut root = json!({});
+
+        assert_eq!(
+            install_papr_session_start_hook(&mut root, "C:\\papr\\papr.exe"),
+            Ok("installed")
+        );
+        assert_eq!(
+            root,
+            json!({
+                "hooks": {
+                    "SessionStart": [{
+                        "matcher": "startup|resume",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "C:\\papr\\papr.exe",
+                            "timeout": 10,
+                            "additionalContextLimit": 1200,
+                        }],
+                    }],
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn migrates_the_legacy_flat_session_start_array_without_losing_hooks() {
+        let mut root = json!({
+            "description": "Existing hooks",
+            "SessionStart": [
+                { "type": "command", "command": "C:\\old\\papr.exe" },
+                { "type": "command", "command": "echo retained" },
+            ],
+            "hooks": {
+                "Stop": [{
+                    "hooks": [{ "type": "command", "command": "echo stopped" }],
+                }],
+            },
+        });
+
+        assert_eq!(
+            install_papr_session_start_hook(&mut root, "C:\\new\\papr.exe"),
+            Ok("migrated")
+        );
+        assert!(root.get("SessionStart").is_none());
+        assert_eq!(
+            root["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            json!("C:\\new\\papr.exe")
+        );
+        assert_eq!(
+            root["hooks"]["SessionStart"][0]["hooks"][1]["command"],
+            json!("echo retained")
+        );
+        assert_eq!(
+            root["hooks"]["Stop"][0]["hooks"][0]["command"],
+            json!("echo stopped")
+        );
+    }
+
+    #[test]
+    fn setup_repairs_an_existing_windows_papr_hook_without_duplicating_it() {
+        let mut root = json!({
+            "hooks": {
+                "SessionStart": [{
+                    "matcher": "startup|resume",
+                    "hooks": [{ "type": "command", "command": "C:\\old path\\papr.exe" }],
+                }],
+            },
+        });
+
+        assert_eq!(
+            install_papr_session_start_hook(&mut root, "C:\\new path\\papr.exe"),
+            Ok("updated")
+        );
+        let sessions = root["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(sessions.len(), 1);
+        let handler = &sessions[0]["hooks"][0];
+        assert_eq!(handler["command"], json!("\"C:\\new path\\papr.exe\""));
+        assert_eq!(handler["timeout"], json!(10));
+        assert_eq!(handler["additionalContextLimit"], json!(1200));
+    }
+
+    #[test]
+    fn recognises_portable_and_windows_papr_commands_only() {
+        assert!(is_papr_command("papr"));
+        assert!(is_papr_command("/usr/local/bin/papr"));
+        assert!(is_papr_command("\"C:\\Program Files\\Papr\\papr.exe\""));
+        assert!(!is_papr_command("papr-notify"));
+    }
 
     #[test]
     fn empty_config_gets_a_clean_features_section() {

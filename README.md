@@ -94,3 +94,24 @@ wires up an ambient SessionStart hook (Claude Code, Codex, OpenCode).
 | **Any** | Prebuilt `papr-<target>.tar.gz` from the [latest release](https://github.com/l0ng-ai/papr/releases/latest), or `cargo build --release -p papr-cli` |
 
 > **Full command reference, agent setup, and install options → [docs/cli.md](docs/cli.md)**
+
+---
+
+## Ubion 경쟁사 모니터링 (GPT OAuth 운영)
+
+이 포크는 Papr를 **Ubion 경쟁사 뉴스 모니터링** 데이터 계층으로 쓴다. 분석은
+OpenAI API 키 없이 **ChatGPT 계정 OAuth로 로그인한 Codex CLI**가 맡고, Papr에는
+어떤 LLM 자격 증명도 저장하지 않는다.
+
+- **[docs/gpt-oauth-workflow.md](docs/gpt-oauth-workflow.md)** — 운영 방식 규정(역할
+  분리·인증·데이터 경계·설치 절차), Codex hook 스키마 대응, 데스크톱 앱 없이
+  브라우저에서 실제 기사를 보는 미리보기 모드, 아키텍처 인사이트와 남은 과제
+- **[REPOSITORY_ANALYSIS.md](REPOSITORY_ANALYSIS.md)** — 레포지토리 구조·동작·품질 분석
+- **[skills/ubion-competitor-monitoring](skills/ubion-competitor-monitoring/SKILL.md)** —
+  원티드랩·엘리스그룹·클라썸·프리윌린·플리토 경쟁 인텔리전스 브리프 스킬
+
+```sh
+pnpm dev          # http://localhost:1430 — Tauri 없이 브라우저에서 경쟁사 기사 미리보기
+codex login       # ChatGPT OAuth — API 키 불필요
+papr setup --app codex
+```
